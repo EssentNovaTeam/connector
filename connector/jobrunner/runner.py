@@ -153,6 +153,19 @@ def _channels():
     )
 
 
+def _run_job_timeout():
+    # environment takes precedence over config file if set.
+    # seconds to wait after asking a worker to start a job
+    # if after this timeout the worker wasn't able to set to job state to
+    # running it's state will be set back to pending
+    # defaults to 1 second
+    timeout = os.environ.get('ODOO_CONNECTOR_RUN_JOB_TIMEOUT', None)
+    if timeout is None:
+        timeout = config.misc.get("options-connector", {}).get(
+            "run_job_timeout", 1)
+    return float(timeout)
+
+
 def _async_http_get(port, db_name, job_uuid):
     # Method to set failed job (due to timeout, etc) as pending,
     # to avoid keeping it as enqueued.
@@ -175,7 +188,7 @@ def _async_http_get(port, db_name, job_uuid):
         try:
             # we are not interested in the result, so we set a short timeout
             # but not too short so we trap and log hard configuration errors
-            requests.get(url, timeout=1)
+            requests.get(url, timeout=_run_job_timeout())
         except requests.Timeout:
             set_job_pending()
         except:
@@ -314,6 +327,7 @@ class ConnectorRunner(object):
                 for job_data in db.select_jobs('state in %s', (NOT_DONE,)):
                     self.channel_manager.notify(db_name, *job_data)
                 _logger.info('connector runner ready for db %s', db_name)
+                _logger.debug('job run timeout %s seconds', _run_job_timeout())
 
     def run_jobs(self):
         now = openerp.fields.Datetime.now()
