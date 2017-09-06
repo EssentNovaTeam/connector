@@ -50,6 +50,7 @@ class QueueJob(models.Model):
                                 ondelete='set null',
                                 select=True,
                                 readonly=True)
+    worker_hostname = fields.Char(string='Worker hostname')
     uuid = fields.Char(string='UUID',
                        readonly=True,
                        select=True,

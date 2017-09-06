@@ -4,6 +4,7 @@ import cPickle
 import mock
 import unittest2
 from datetime import datetime, timedelta
+from socket import gethostname
 
 from openerp import SUPERUSER_ID, exceptions
 import openerp.tests.common as common
@@ -277,6 +278,12 @@ class TestJobs(unittest2.TestCase):
         self.assertEquals(job_a.state, STARTED)
         self.assertEquals(job_a.date_started,
                           datetime(2015, 3, 15, 16, 41, 0))
+
+    def test_set_worker_hostname(self):
+        job_a = Job(func=task_a)
+        job_a.set_started()
+
+        self.assertEquals(job_a.worker_hostname, gethostname())
 
     def test_set_done(self):
         job_a = Job(func=task_a)

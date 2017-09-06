@@ -27,6 +27,7 @@ import sys
 from datetime import date, datetime, timedelta, MINYEAR
 from cPickle import dumps, UnpicklingError, Unpickler
 from cStringIO import StringIO
+from socket import gethostname
 
 import openerp
 from openerp.tools.translate import _
@@ -219,6 +220,7 @@ class OpenERPJobStorage(JobStorage):
                 'date_done': False,
                 'eta': False,
                 'func_name': job_.func_name,
+                'worker_hostname': job_.worker_hostname
                 }
 
         dt_to_string = openerp.fields.Datetime.to_string
@@ -298,6 +300,7 @@ class OpenERPJobStorage(JobStorage):
         job_.model_name = stored.model_name if stored.model_name else None
         job_.retry = stored.retry
         job_.max_retries = stored.max_retries
+        job_.worker_hostname = stored.worker_hostname
         if stored.worker_id:
             job_.worker_uuid = stored.worker_id.uuid
         if stored.company_id:
@@ -315,6 +318,11 @@ class Job(object):
     .. attribute:: worker_uuid
 
         When the job is enqueued, UUID of the worker.
+
+    .. attribute:: worker_hostname
+
+       The hostname of the host that is executing a job, returns None if
+       it is not running.
 
     .. attribute:: state
 
@@ -447,6 +455,7 @@ class Job(object):
             self.max_retries = max_retries
 
         self._uuid = job_uuid
+        self.worker_hostname = None
 
         self.func_name = None
         if func:
@@ -596,6 +605,7 @@ class Job(object):
     def set_started(self):
         self.state = STARTED
         self.date_started = datetime.now()
+        self.worker_hostname = gethostname()
 
     def set_done(self, result=None):
         self.state = DONE
