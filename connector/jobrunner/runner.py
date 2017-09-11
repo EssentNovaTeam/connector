@@ -291,6 +291,9 @@ class Database(object):
                        (ENQUEUED, uuid))
 
     def get_base_url(self):
+        """ Fetch the base url for the connector by checking
+        'connector.base.url' as a config parameter, do this instead of
+        'web.base.url' because we only want to switch when the env is ready """
         with closing(self.conn.cursor()) as cr:
             cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
                        'connector.base.url'"")
