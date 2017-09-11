@@ -166,7 +166,7 @@ def _run_job_timeout():
     return float(timeout)
 
 
-def _async_http_get(port, db_name, job_uuid):
+def _async_http_get(base_url, db_name, job_uuid):
     # Method to set failed job (due to timeout, etc) as pending,
     # to avoid keeping it as enqueued.
     def set_job_pending():
@@ -183,8 +183,8 @@ def _async_http_get(port, db_name, job_uuid):
     #       if this was python3 I would be doing this with
     #       asyncio, aiohttp and aiopg
     def urlopen():
-        url = ('http://localhost:%s/connector/runjob?db=%s&job_uuid=%s' %
-               (port, db_name, job_uuid))
+        url = ('%s/connector/runjob?db=%s&job_uuid=%s' %
+               (base_url, db_name, job_uuid))
         try:
             # we are not interested in the result, so we set a short timeout
             # but not too short so we trap and log hard configuration errors
@@ -285,11 +285,16 @@ class Database(object):
                        "WHERE uuid=%s",
                        (ENQUEUED, uuid))
 
+    def get_base_url(self):
+        with closing(self.conn.cursor()) as cr:
+            cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
+                       'web.base.url'"")
+            return cr.fetchone()
 
 class ConnectorRunner(object):
 
-    def __init__(self, port=8069, channel_config_string='root:1'):
-        self.port = port
+    def __init__(self, base_url='http://localhost:8069', channel_config_string='root:1'):
+        self.base_url = base_url
         self.channel_manager = ChannelManager()
         self.channel_manager.simple_configure(channel_config_string)
         self.db_by_name = {}
@@ -305,6 +310,11 @@ class ConnectorRunner(object):
         if dbfilter and '%d' not in dbfilter and '%h' not in dbfilter:
             db_names = [d for d in db_names if re.match(dbfilter, d)]
         return db_names
+
+    def get_base_url(self, db_name):
+        base_url = self.db_by_name[db_name].get_base_url()
+
+        return base_url or self.base_url
 
     def close_databases(self, remove_jobs=True):
         for db_name, db in self.db_by_name.items():
@@ -337,7 +347,7 @@ class ConnectorRunner(object):
             _logger.info("asking Odoo to run job %s on db %s",
                          job.uuid, job.db_name)
             self.db_by_name[job.db_name].set_job_enqueued(job.uuid)
-            _async_http_get(self.port, job.db_name, job.uuid)
+            _async_http_get(self.get_base_url(job.db_name), job.db_name, job.uuid)
 
     def process_notifications(self):
         for db in self.db_by_name.values():
