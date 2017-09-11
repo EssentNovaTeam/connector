@@ -293,7 +293,7 @@ class Database(object):
     def get_base_url(self):
         with closing(self.conn.cursor()) as cr:
             cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
-                       'web.base.url'"")
+                       'connector.base.url'"")
             result = cr.fetchone()
 
             return result[0] if result else False
