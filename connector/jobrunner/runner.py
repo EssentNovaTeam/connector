@@ -294,7 +294,9 @@ class Database(object):
         with closing(self.conn.cursor()) as cr:
             cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
                        'web.base.url'"")
-            return cr.fetchone()
+            result = cr.fetchone()
+
+            return result[0] if result else False
 
 class ConnectorRunner(object):
 
