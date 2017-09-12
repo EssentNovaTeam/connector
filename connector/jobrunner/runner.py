@@ -290,17 +290,6 @@ class Database(object):
                        "WHERE uuid=%s",
                        (ENQUEUED, uuid))
 
-    def get_base_url(self):
-        """ Fetch the base url for the connector by checking
-        'connector.base.url' as a config parameter, do this instead of
-        'web.base.url' because we only want to switch when the env is ready """
-        with closing(self.conn.cursor()) as cr:
-            cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
-                       'connector.base.url'"")
-            result = cr.fetchone()
-
-            return result[0] if result else False
-
 class ConnectorRunner(object):
 
     def __init__(self, base_url='http://localhost:8069', channel_config_string='root:1'):
@@ -321,10 +310,13 @@ class ConnectorRunner(object):
             db_names = [d for d in db_names if re.match(dbfilter, d)]
         return db_names
 
-    def get_base_url(self, db_name):
-        base_url = self.db_by_name[db_name].get_base_url()
+    def get_base_url(self):
+        connector_options = config.misc.get("options-connector", {})
 
-        return base_url or self.base_url
+        if connector_options.get('base_url'):
+            return connector_options.get('base_url')
+
+        return self.base_url
 
     def close_databases(self, remove_jobs=True):
         for db_name, db in self.db_by_name.items():
@@ -357,7 +349,7 @@ class ConnectorRunner(object):
             _logger.info("asking Odoo to run job %s on db %s",
                          job.uuid, job.db_name)
             self.db_by_name[job.db_name].set_job_enqueued(job.uuid)
-            _async_http_get(self.get_base_url(job.db_name), job.db_name, job.uuid)
+            _async_http_get(self.get_base_url(), job.db_name, job.uuid)
 
     def process_notifications(self):
         for db in self.db_by_name.values():
