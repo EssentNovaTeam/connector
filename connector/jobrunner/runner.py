@@ -296,7 +296,7 @@ class Database(object):
         'web.base.url' because we only want to switch when the env is ready """
         with closing(self.conn.cursor()) as cr:
             cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
-                       'connector.base.url'"")
+                       "'connector.base.url'")
             result = cr.fetchone()
 
             return result[0] if result else False
