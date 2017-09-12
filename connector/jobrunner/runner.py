@@ -322,6 +322,8 @@ class ConnectorRunner(object):
         return db_names
 
     def get_base_url(self, db_name):
+        """ Return base url, if the database does not contain it return the
+        default which is http://localhost:xmlrpc_port """
         base_url = self.db_by_name[db_name].get_base_url()
 
         return base_url or self.base_url
