@@ -147,7 +147,8 @@ class OpenERPJobStorage(JobStorage):
             "Model %s not found" % self._job_model_name)
 
     def enqueue(self, func, model_name=None, args=None, kwargs=None,
-                priority=None, eta=None, max_retries=None, description=None):
+                priority=None, eta=None, max_retries=None, description=None,
+                sequence_group=None):
         """Create a Job and enqueue it in the queue. Return the job uuid.
 
         This expects the arguments specific to the job to be already extracted
@@ -156,7 +157,8 @@ class OpenERPJobStorage(JobStorage):
         """
         new_job = Job(func=func, model_name=model_name, args=args,
                       kwargs=kwargs, priority=priority, eta=eta,
-                      max_retries=max_retries, description=description)
+                      max_retries=max_retries, description=description,
+                      sequence_group=sequence_group)
         new_job.user_id = self.session.uid
         if 'company_id' in self.session.context:
             company_id = self.session.context['company_id']
@@ -177,13 +179,15 @@ class OpenERPJobStorage(JobStorage):
         model_name = kwargs.pop('model_name', None)
         max_retries = kwargs.pop('max_retries', None)
         description = kwargs.pop('description', None)
+        sequence_group = kwargs.pop('sequence_group', None)
 
         return self.enqueue(func, model_name=model_name,
                             args=args, kwargs=kwargs,
                             priority=priority,
                             max_retries=max_retries,
                             eta=eta,
-                            description=description)
+                            description=description,
+                            sequence_group=sequence_group)
 
     def exists(self, job_uuid):
         """Returns if a job still exists in the storage."""
@@ -220,7 +224,8 @@ class OpenERPJobStorage(JobStorage):
                 'date_done': False,
                 'eta': False,
                 'func_name': job_.func_name,
-                'worker_hostname': job_.worker_hostname
+                'worker_hostname': job_.worker_hostname,
+                'sequence_group': job_.sequence_group,
                 }
 
         dt_to_string = openerp.fields.Datetime.to_string
@@ -414,7 +419,7 @@ class Job(object):
     def __init__(self, func=None, model_name=None,
                  args=None, kwargs=None, priority=None,
                  eta=None, job_uuid=None, max_retries=None,
-                 description=None):
+                 description=None, sequence_group=None):
         """ Create a Job
 
         :param func: function to execute
@@ -482,6 +487,7 @@ class Job(object):
 
         self.date_created = datetime.now()
         self._description = description
+        self.sequence_group = sequence_group
         self.date_enqueued = None
         self.date_started = None
         self.date_done = None

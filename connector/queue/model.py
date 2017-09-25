@@ -95,6 +95,7 @@ class QueueJob(models.Model):
                                       store=True)
     # for searching without JOIN on channels
     channel = fields.Char(compute='_compute_channel', store=True, select=True)
+    sequence_group = fields.Char()
 
     @api.one
     @api.depends('func_name', 'job_function_id.channel_id')
