@@ -226,6 +226,7 @@ class OpenERPJobStorage(JobStorage):
                 'func_name': job_.func_name,
                 'worker_hostname': job_.worker_hostname,
                 'sequence_group': job_.sequence_group,
+                'related_model_name': job_.related_model_name,
                 }
 
         dt_to_string = openerp.fields.Datetime.to_string
@@ -419,7 +420,8 @@ class Job(object):
     def __init__(self, func=None, model_name=None,
                  args=None, kwargs=None, priority=None,
                  eta=None, job_uuid=None, max_retries=None,
-                 description=None, sequence_group=None):
+                 description=None, sequence_group=None,
+                 related_model_name=None):
         """ Create a Job
 
         :param func: function to execute
@@ -501,6 +503,8 @@ class Job(object):
         self.eta = eta
         self.canceled = False
         self.worker_uuid = None
+        if 'related_model_name' in kwargs:
+            self.related_model_name = kwargs.get('related_model_name')
 
     def __cmp__(self, other):
         if not isinstance(other, Job):

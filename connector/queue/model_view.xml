@@ -80,6 +80,7 @@
                         </h1>
                         <group>
                             <field name="uuid"/>
+                            <field name="related_model_name"/>
                             <field name="func_string"/>
                             <field name="job_function_id"/>
                             <field name="channel"/>
@@ -113,6 +114,9 @@
                         </group>
                         <group name="exc_info" string="Exception Information" attrs="{'invisible': [('exc_info', '=', False)]}">
                             <field nolabel="1" name="exc_info"/>
+                        </group>
+                        <group>
+                            <field name="message_xml"/>
                         </group>
                     </sheet>
                     <div class="oe_chatter">

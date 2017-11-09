@@ -19,6 +19,7 @@
 #
 ##############################################################################
 
+import re
 import os
 import logging
 from datetime import datetime, timedelta
@@ -96,6 +97,20 @@ class QueueJob(models.Model):
     # for searching without JOIN on channels
     channel = fields.Char(compute='_compute_channel', store=True, select=True)
     sequence_group = fields.Char()
+    related_model_name = fields.Char()
+    message_xml = fields.Text(compute='_get_job_message_xml', readonly=True)
+
+    @api.multi
+    def _get_job_message_xml(self):
+        for job in self:
+            if job.related_model_name:
+                record_number = int(job.model_name)
+                rel = self.env[job.related_model_name].browse(record_number)
+                field_name = [item for item in rel.fields_get_keys() if
+                              re.search('_xml', item)][0]
+                job.message_xml = getattr(rel, field_name)
+            else:
+                job.message_xml = "Message too old"
 
     @api.one
     @api.depends('func_name', 'job_function_id.channel_id')
