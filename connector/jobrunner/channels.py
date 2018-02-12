@@ -485,7 +485,7 @@ class Channel(object):
                               map(lambda j: j.uuid, deferred_sequence_jobs),
                               job.sequence_group,
                               self)
-                break
+                continue
             self._running.add(job)
             _logger.debug("job %s marked running in channel %s",
                           job.uuid, self)
