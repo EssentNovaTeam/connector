@@ -112,13 +112,14 @@ Caveat
        of running Odoo is obviously not for production purposes.
 """
 
+from concurrent import futures
 from contextlib import closing
 import logging
 import os
 import re
 import select
-import threading
 import time
+import trollius as asyncio
 
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
@@ -133,6 +134,10 @@ SELECT_TIMEOUT = 60
 ERROR_RECOVERY_DELAY = 5
 
 _logger = logging.getLogger(__name__)
+
+# Create an executor that 40 threads (default=5)
+# TODO: how to expand the thread pool dynamically
+executor = futures.ThreadPoolExecutor(40)
 
 
 # Unfortunately, it is not possible to extend the Odoo
@@ -179,29 +184,22 @@ def _async_http_get(base_url, db_name, job_uuid):
                 "WHERE uuid=%s and state=%s", (PENDING, job_uuid, ENQUEUED)
             )
 
-    # TODO: better way to HTTP GET asynchronously (grequest, ...)?
-    #       if this was python3 I would be doing this with
-    #       asyncio, aiohttp and aiopg
-    def urlopen():
-        url = ('%s/connector/runjob?db=%s&job_uuid=%s' %
-               (base_url, db_name, job_uuid))
-        try:
-            # we are not interested in the result, so we set a short timeout
-            # but not too short so we trap and log hard configuration errors
-            response = requests.get(url, timeout=_run_job_timeout())
+    url = ('%s/connector/runjob?db=%s&job_uuid=%s' %
+           (base_url, db_name, job_uuid))
+    try:
+        # we are not interested in the result, so we set a short timeout
+        # but not too short so we trap and log hard configuration errors
+        response = requests.get(url, timeout=_run_job_timeout())
 
-            # raise_for_status will result in either nothing, a Client Error
-            # for HTTP Response codes between 400 and 500 or a Server Error
-            # for codes between 500 and 600
-            response.raise_for_status()
-        except requests.Timeout:
-            set_job_pending()
-        except:
-            _logger.exception("exception in GET %s", url)
-            set_job_pending()
-    thread = threading.Thread(target=urlopen)
-    thread.daemon = True
-    thread.start()
+        # raise_for_status will result in either nothing, a Client Error
+        # for HTTP Response codes between 400 and 500 or a Server Error
+        # for codes between 500 and 600
+        response.raise_for_status()
+    except requests.Timeout:
+        set_job_pending()
+    except:
+        _logger.exception("exception in GET %s", url)
+        set_job_pending()
 
 
 class Database(object):
@@ -352,6 +350,11 @@ class ConnectorRunner(object):
                 _logger.debug('job run timeout %s seconds', _run_job_timeout())
 
     def run_jobs(self):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         now = openerp.fields.Datetime.now()
         for job in self.channel_manager.get_jobs_to_run(now):
             if self._stop:
@@ -359,7 +362,9 @@ class ConnectorRunner(object):
             _logger.info("asking Odoo to run job %s on db %s",
                          job.uuid, job.db_name)
             self.db_by_name[job.db_name].set_job_enqueued(job.uuid)
-            _async_http_get(self.get_base_url(job.db_name), job.db_name, job.uuid)
+            loop.run_in_executor(
+                executor, _async_http_get, self.get_base_url(job.db_name),
+                job.db_name, job.uuid)
 
     def process_notifications(self):
         for db in self.db_by_name.values():
