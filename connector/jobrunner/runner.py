@@ -125,6 +125,7 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import requests
 
 import openerp
+from openerp.sql_db import Connection, ConnectionPool, dsn
 from openerp.tools import config
 
 from .channels import ChannelManager, PENDING, ENQUEUED, NOT_DONE
@@ -132,6 +133,7 @@ from .channels import ChannelManager, PENDING, ENQUEUED, NOT_DONE
 SELECT_TIMEOUT = 60
 ERROR_RECOVERY_DELAY = 5
 
+messaging_db_pool = None
 _logger = logging.getLogger(__name__)
 
 
@@ -157,9 +159,7 @@ def _async_http_get(port, db_name, job_uuid):
     # Method to set failed job (due to timeout, etc) as pending,
     # to avoid keeping it as enqueued.
     def set_job_pending():
-        conn = psycopg2.connect(openerp.sql_db.dsn(db_name)[1])
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        with closing(conn.cursor()) as cr:
+        with closing(autocommitting_cursor(db_name)) as cr:
             cr.execute(
                 "UPDATE queue_job SET state=%s, "
                 "date_enqueued=NULL, date_started=NULL "
@@ -184,6 +184,19 @@ def _async_http_get(port, db_name, job_uuid):
     thread = threading.Thread(target=urlopen)
     thread.daemon = True
     thread.start()
+
+
+def autocommitting_cursor(to):
+    """ Provide an autocommitting cursor from a pooled connection to
+    database 'to' """
+    global db_pool
+    db, uri = dsn(to)
+    if db != to:
+        raise ValueError('URI connections not allowed')
+    conn = Connection(db_pool, db, uri)
+    cr = conn.cursor()
+    cr.autocommit(True)
+    return cr
 
 
 class Database(object):
@@ -260,12 +273,12 @@ class Database(object):
                  "FROM queue_job WHERE %s" %
                  ('channel' if self.has_channel else 'NULL',
                   where))
-        with closing(self.conn.cursor()) as cr:
+        with closing(autocommitting_cursor(self.db_name)) as cr:
             cr.execute(query, args)
             return list(cr.fetchall())
 
     def set_job_enqueued(self, uuid):
-        with closing(self.conn.cursor()) as cr:
+        with closing(autocommitting_cursor(self.db_name)) as cr:
             cr.execute("UPDATE queue_job SET state=%s, "
                        "date_enqueued=date_trunc('seconds', "
                        "                         now() at time zone 'utc') "
@@ -282,6 +295,10 @@ class ConnectorRunner(object):
         self.db_by_name = {}
         self._stop = False
         self._stop_pipe = os.pipe()
+        global db_pool
+        db_maxconn = config.misc.get("options-connector", {}).get(
+            "db_maxconn", 10)
+        db_pool = ConnectionPool(int(db_maxconn))
 
     def get_db_names(self):
         if openerp.tools.config['db_name']:
@@ -298,11 +315,13 @@ class ConnectorRunner(object):
             try:
                 if remove_jobs:
                     self.channel_manager.remove_db(db_name)
-                db.close()
+                    db.close()
             except:
                 _logger.warning('error closing database %s',
                                 db_name, exc_info=True)
         self.db_by_name = {}
+        global db_pool
+        db_pool.close_all()
 
     def initialize_databases(self):
         for db_name in self.get_db_names():
