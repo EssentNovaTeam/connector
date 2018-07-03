@@ -84,6 +84,7 @@
                             <field name="job_function_id"/>
                             <field name="channel"/>
                             <field name="worker_id"/>
+                            <field name="worker_hostname"/>
                         </group>
                         <group>
                             <group>
@@ -136,6 +137,7 @@
                     <field name="date_created"/>
                     <field name="date_done"/>
                     <field name="uuid"/>
+                    <field name="worker_hostname"/>
                     <field name="channel"/>
                     <field name="company_id" groups="base.group_multi_company"/>
                 </tree>

@@ -50,6 +50,7 @@ class QueueJob(models.Model):
                                 ondelete='set null',
                                 select=True,
                                 readonly=True)
+    worker_hostname = fields.Char(string='Worker hostname')
     uuid = fields.Char(string='UUID',
                        readonly=True,
                        select=True,
@@ -94,6 +95,7 @@ class QueueJob(models.Model):
                                       store=True)
     # for searching without JOIN on channels
     channel = fields.Char(compute='_compute_channel', store=True, select=True)
+    sequence_group = fields.Char()
 
     @api.one
     @api.depends('func_name', 'job_function_id.channel_id')

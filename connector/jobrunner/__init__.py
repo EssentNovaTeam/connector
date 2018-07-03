@@ -49,8 +49,10 @@ class ConnectorRunnerThread(Thread):
         Thread.__init__(self)
         self.daemon = True
         port = os.environ.get('ODOO_CONNECTOR_PORT') or config['xmlrpc_port']
+        base_url = port and 'http://localhost:%s' % port \
+                   or 'http://localhost:8069'
         channels = _channels()
-        self.runner = ConnectorRunner(port or 8069, channels or 'root:1')
+        self.runner = ConnectorRunner(base_url, channels or 'root:1')
 
     def run(self):
         # sleep a bit to let the workers start at ease

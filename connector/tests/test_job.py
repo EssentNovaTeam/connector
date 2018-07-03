@@ -4,8 +4,9 @@ import cPickle
 import mock
 import unittest2
 from datetime import datetime, timedelta
+from socket import gethostname
 
-from openerp import SUPERUSER_ID, exceptions
+from openerp import exceptions
 import openerp.tests.common as common
 from openerp.addons.connector.queue.job import (
     Job,
@@ -277,6 +278,12 @@ class TestJobs(unittest2.TestCase):
         self.assertEquals(job_a.state, STARTED)
         self.assertEquals(job_a.date_started,
                           datetime(2015, 3, 15, 16, 41, 0))
+
+    def test_set_worker_hostname(self):
+        job_a = Job(func=task_a)
+        job_a.set_started()
+
+        self.assertEquals(job_a.worker_hostname, gethostname())
 
     def test_set_done(self):
         job_a = Job(func=task_a)
@@ -558,7 +565,7 @@ class TestJobModel(common.TransactionCase):
         stored.write({'state': 'failed'})
         self.assertEqual(stored.state, FAILED)
         messages = stored.message_ids
-        self.assertEqual(len(messages), 2)
+        self.assertEqual(len(messages), 1)
 
     def test_follower_when_write_fail(self):
         group = self.env.ref('connector.group_connector_manager')
@@ -714,9 +721,9 @@ class TestJobStorageMultiCompany(common.TransactionCase):
         with s.change_context(company_id=self.other_company_a.id):
             stored = self._create_job()
         stored.sudo(self.other_user_a.id)._subscribe_users()
-        # 2 because admin + self.other_partner_a
-        self.assertEqual(len(stored.message_follower_ids), 2)
-        users = User.browse([SUPERUSER_ID, self.other_user_a.id])
+        # 1 because self.other_partner_a
+        self.assertEqual(len(stored.message_follower_ids), 1)
+        users = User.browse([self.other_user_a.id])
         expected_partners = [u.partner_id for u in users]
         self.assertSetEqual(set(stored.message_follower_ids),
                             set(expected_partners))

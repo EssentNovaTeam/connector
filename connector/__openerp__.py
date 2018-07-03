@@ -20,7 +20,7 @@
 ##############################################################################
 
 {'name': 'Connector',
- 'version': '8.0.3.3.0',
+ 'version': '8.0.3.3.1',
  'author': 'Camptocamp,Openerp Connector Core Editors,'
            'Odoo Community Association (OCA)',
  'website': 'http://odoo-connector.com',
@@ -42,4 +42,5 @@
           ],
  'installable': True,
  'application': True,
- }
+ 'post_init_hook': 'post_init_hook',
+}

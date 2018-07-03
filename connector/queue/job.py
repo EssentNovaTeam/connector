@@ -27,6 +27,7 @@ import sys
 from datetime import date, datetime, timedelta, MINYEAR
 from cPickle import dumps, UnpicklingError, Unpickler
 from cStringIO import StringIO
+from socket import gethostname
 
 import openerp
 from openerp.tools.translate import _
@@ -146,7 +147,8 @@ class OpenERPJobStorage(JobStorage):
             "Model %s not found" % self._job_model_name)
 
     def enqueue(self, func, model_name=None, args=None, kwargs=None,
-                priority=None, eta=None, max_retries=None, description=None):
+                priority=None, eta=None, max_retries=None, description=None,
+                sequence_group=None):
         """Create a Job and enqueue it in the queue. Return the job uuid.
 
         This expects the arguments specific to the job to be already extracted
@@ -155,7 +157,8 @@ class OpenERPJobStorage(JobStorage):
         """
         new_job = Job(func=func, model_name=model_name, args=args,
                       kwargs=kwargs, priority=priority, eta=eta,
-                      max_retries=max_retries, description=description)
+                      max_retries=max_retries, description=description,
+                      sequence_group=sequence_group)
         new_job.user_id = self.session.uid
         if 'company_id' in self.session.context:
             company_id = self.session.context['company_id']
@@ -176,13 +179,15 @@ class OpenERPJobStorage(JobStorage):
         model_name = kwargs.pop('model_name', None)
         max_retries = kwargs.pop('max_retries', None)
         description = kwargs.pop('description', None)
+        sequence_group = kwargs.pop('sequence_group', None)
 
         return self.enqueue(func, model_name=model_name,
                             args=args, kwargs=kwargs,
                             priority=priority,
                             max_retries=max_retries,
                             eta=eta,
-                            description=description)
+                            description=description,
+                            sequence_group=sequence_group)
 
     def exists(self, job_uuid):
         """Returns if a job still exists in the storage."""
@@ -219,6 +224,8 @@ class OpenERPJobStorage(JobStorage):
                 'date_done': False,
                 'eta': False,
                 'func_name': job_.func_name,
+                'worker_hostname': job_.worker_hostname,
+                'sequence_group': job_.sequence_group,
                 }
 
         dt_to_string = openerp.fields.Datetime.to_string
@@ -256,7 +263,10 @@ class OpenERPJobStorage(JobStorage):
                                   job_.args,
                                   job_.kwargs))
 
-            self.job_model.sudo().create(vals)
+            self.job_model.with_context(
+                mail_create_nosubscribe=True,
+                mail_create_nolog=True,
+                mail_notrack=True).sudo().create(vals)
 
     def load(self, job_uuid):
         """ Read a job from the Database"""
@@ -298,6 +308,9 @@ class OpenERPJobStorage(JobStorage):
         job_.model_name = stored.model_name if stored.model_name else None
         job_.retry = stored.retry
         job_.max_retries = stored.max_retries
+        job_.worker_hostname = stored.worker_hostname
+        job_.sequence_group = stored.sequence_group \
+            if stored.sequence_group else None
         if stored.worker_id:
             job_.worker_uuid = stored.worker_id.uuid
         if stored.company_id:
@@ -315,6 +328,11 @@ class Job(object):
     .. attribute:: worker_uuid
 
         When the job is enqueued, UUID of the worker.
+
+    .. attribute:: worker_hostname
+
+       The hostname of the host that is executing a job, returns None if
+       it is not running.
 
     .. attribute:: state
 
@@ -406,7 +424,7 @@ class Job(object):
     def __init__(self, func=None, model_name=None,
                  args=None, kwargs=None, priority=None,
                  eta=None, job_uuid=None, max_retries=None,
-                 description=None):
+                 description=None, sequence_group=None):
         """ Create a Job
 
         :param func: function to execute
@@ -447,6 +465,7 @@ class Job(object):
             self.max_retries = max_retries
 
         self._uuid = job_uuid
+        self.worker_hostname = None
 
         self.func_name = None
         if func:
@@ -473,6 +492,7 @@ class Job(object):
 
         self.date_created = datetime.now()
         self._description = description
+        self.sequence_group = sequence_group
         self.date_enqueued = None
         self.date_started = None
         self.date_done = None
@@ -592,10 +612,12 @@ class Job(object):
         self.date_enqueued = datetime.now()
         self.date_started = None
         self.worker_uuid = worker.uuid
+        self.worker_hostname = gethostname()
 
     def set_started(self):
         self.state = STARTED
         self.date_started = datetime.now()
+        self.worker_hostname = gethostname()
 
     def set_done(self, result=None):
         self.state = DONE

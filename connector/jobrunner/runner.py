@@ -153,7 +153,20 @@ def _channels():
     )
 
 
-def _async_http_get(port, db_name, job_uuid):
+def _run_job_timeout():
+    # environment takes precedence over config file if set.
+    # seconds to wait after asking a worker to start a job
+    # if after this timeout the worker wasn't able to set to job state to
+    # running it's state will be set back to pending
+    # defaults to 1 second
+    timeout = os.environ.get('ODOO_CONNECTOR_RUN_JOB_TIMEOUT', None)
+    if timeout is None:
+        timeout = config.misc.get("options-connector", {}).get(
+            "run_job_timeout", 1)
+    return float(timeout)
+
+
+def _async_http_get(base_url, db_name, job_uuid):
     # Method to set failed job (due to timeout, etc) as pending,
     # to avoid keeping it as enqueued.
     def set_job_pending():
@@ -170,12 +183,17 @@ def _async_http_get(port, db_name, job_uuid):
     #       if this was python3 I would be doing this with
     #       asyncio, aiohttp and aiopg
     def urlopen():
-        url = ('http://localhost:%s/connector/runjob?db=%s&job_uuid=%s' %
-               (port, db_name, job_uuid))
+        url = ('%s/connector/runjob?db=%s&job_uuid=%s' %
+               (base_url, db_name, job_uuid))
         try:
             # we are not interested in the result, so we set a short timeout
             # but not too short so we trap and log hard configuration errors
-            requests.get(url, timeout=1)
+            response = requests.get(url, timeout=_run_job_timeout())
+
+            # raise_for_status will result in either nothing, a Client Error
+            # for HTTP Response codes between 400 and 500 or a Server Error
+            # for codes between 500 and 600
+            response.raise_for_status()
         except requests.Timeout:
             set_job_pending()
         except:
@@ -256,7 +274,7 @@ class Database(object):
 
     def select_jobs(self, where, args):
         query = ("SELECT %s, uuid, id as seq, date_created, "
-                 "priority, eta, state "
+                 "priority, eta, state, sequence_group "
                  "FROM queue_job WHERE %s" %
                  ('channel' if self.has_channel else 'NULL',
                   where))
@@ -272,11 +290,21 @@ class Database(object):
                        "WHERE uuid=%s",
                        (ENQUEUED, uuid))
 
+    def get_base_url(self):
+        """ Fetch the base url for the connector by checking
+        'connector.base.url' as a config parameter, do this instead of
+        'web.base.url' because we only want to switch when the env is ready """
+        with closing(self.conn.cursor()) as cr:
+            cr.execute("SELECT value FROM ir_config_parameter WHERE key = "
+                       "'connector.base.url'")
+            result = cr.fetchone()
+
+            return result[0] if result else False
 
 class ConnectorRunner(object):
 
-    def __init__(self, port=8069, channel_config_string='root:1'):
-        self.port = port
+    def __init__(self, base_url='http://localhost:8069', channel_config_string='root:1'):
+        self.base_url = base_url
         self.channel_manager = ChannelManager()
         self.channel_manager.simple_configure(channel_config_string)
         self.db_by_name = {}
@@ -292,6 +320,13 @@ class ConnectorRunner(object):
         if dbfilter and '%d' not in dbfilter and '%h' not in dbfilter:
             db_names = [d for d in db_names if re.match(dbfilter, d)]
         return db_names
+
+    def get_base_url(self, db_name):
+        """ Return base url, if the database does not contain it return the
+        default which is http://localhost:xmlrpc_port """
+        base_url = self.db_by_name[db_name].get_base_url()
+
+        return base_url or self.base_url
 
     def close_databases(self, remove_jobs=True):
         for db_name, db in self.db_by_name.items():
@@ -314,6 +349,7 @@ class ConnectorRunner(object):
                 for job_data in db.select_jobs('state in %s', (NOT_DONE,)):
                     self.channel_manager.notify(db_name, *job_data)
                 _logger.info('connector runner ready for db %s', db_name)
+                _logger.debug('job run timeout %s seconds', _run_job_timeout())
 
     def run_jobs(self):
         now = openerp.fields.Datetime.now()
@@ -323,7 +359,7 @@ class ConnectorRunner(object):
             _logger.info("asking Odoo to run job %s on db %s",
                          job.uuid, job.db_name)
             self.db_by_name[job.db_name].set_job_enqueued(job.uuid)
-            _async_http_get(self.port, job.db_name, job.uuid)
+            _async_http_get(self.get_base_url(job.db_name), job.db_name, job.uuid)
 
     def process_notifications(self):
         for db in self.db_by_name.values():

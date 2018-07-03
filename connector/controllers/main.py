@@ -1,8 +1,9 @@
 import logging
+from random import randint
 import traceback
 from cStringIO import StringIO
 
-from psycopg2 import OperationalError
+from psycopg2 import OperationalError, InternalError, errorcodes
 
 import openerp
 from openerp import http, tools
@@ -20,7 +21,7 @@ from ..exception import (NoSuchJobError,
 _logger = logging.getLogger(__name__)
 
 PG_RETRY = 5  # seconds
-
+PG_INTERNAL_ERRORS_TO_RETRY = [errorcodes.IN_FAILED_SQL_TRANSACTION]
 
 # TODO: perhaps the notion of ConnectionSession is less important
 #       now that we are running jobs inside a normal Odoo worker
@@ -93,15 +94,19 @@ class RunJobController(http.Controller):
         try:
             try:
                 self._try_perform_job(session_hdl, job)
-            except OperationalError as err:
+            except (OperationalError, InternalError) as err:
                 # Automatically retry the typical transaction serialization
                 # errors
-                if err.pgcode not in PG_CONCURRENCY_ERRORS_TO_RETRY:
+                if err.pgcode not in PG_CONCURRENCY_ERRORS_TO_RETRY and \
+                        err.pgcode not in PG_INTERNAL_ERRORS_TO_RETRY:
                     raise
 
                 retry_postpone(job, tools.ustr(err.pgerror, errors='replace'),
-                               seconds=PG_RETRY)
-                _logger.debug('%s OperationalError, postponed', job)
+                               # Nova: random delay to prevent concurrent
+                               # retries of mutual deadlocks
+                               seconds=randint(PG_RETRY, PG_RETRY+20))
+                _logger.debug(
+                    '%s OperationalError or InternalError, postponed', job)
 
         except NothingToDoJob as err:
             if unicode(err):
