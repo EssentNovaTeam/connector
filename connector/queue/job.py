@@ -612,7 +612,6 @@ class Job(object):
         self.date_enqueued = datetime.now()
         self.date_started = None
         self.worker_uuid = worker.uuid
-        self.worker_hostname = gethostname()
 
     def set_started(self):
         self.state = STARTED
