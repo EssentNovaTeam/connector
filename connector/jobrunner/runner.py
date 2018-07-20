@@ -134,8 +134,7 @@ ERROR_RECOVERY_DELAY = 5
 
 _logger = logging.getLogger(__name__)
 
-
-session = requests.Session()
+sessions = {}
 
 
 # Unfortunately, it is not possible to extend the Odoo
@@ -169,24 +168,15 @@ def _run_job_timeout():
     return float(timeout)
 
 
-session = requests.Session()
-
-
-def _connection_info_for(db_name):
-    db_or_uri, connection_info = openerp.sql_db.connection_info_for(db_name)
-    return connection_info
-
-
-def _async_http_get(scheme, host, port, user, password, db_name, job_uuid):
-
+def _async_http_get(base_url, db_name, job_uuid):
+    if not sessions.get(db_name):
+        sessions[db_name] = requests.Session()
+    session = sessions[db_name]
     if not session.cookies:
         # obtain an anonymous session
         _logger.info("obtaining an anonymous session for the job runner")
-        url = ('%s://%s:%s/connector/session' % (scheme, host, port))
-        auth = None
-        if user:
-            auth = (user, password)
-        response = session.get(url, timeout=30, auth=auth)
+        url = '%s/web/login?db=%s' % (base_url, db_name)
+        response = session.get(url, timeout=max(_run_job_timeout(), 30))
         response.raise_for_status()
 
     # Method to set failed job (due to timeout, etc) as pending,
