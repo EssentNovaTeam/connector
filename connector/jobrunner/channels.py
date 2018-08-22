@@ -331,13 +331,15 @@ class Channel(object):
     without risking to overflow the system.
     """
 
-    def __init__(self, name, parent, capacity=None, sequential=False):
+    def __init__(self, name, parent, capacity=None, sequential=False,
+                 minimum=None):
         self.name = name
         self.parent = parent
         if self.parent:
             self.parent.children[name] = self
         self.children = {}
         self.capacity = capacity
+        self.minimum = minimum
         self.sequential = sequential
         self._queue = ChannelQueue()
         self._running = SafeSet()
@@ -350,9 +352,11 @@ class Channel(object):
 
         * capacity
         * sequential
+        * minimum
         """
         assert self.fullname.endswith(config['name'])
         self.capacity = config.get('capacity', None)
+        self.minimum = int(config.get('minimum', self.capacity))
         self.sequential = bool(config.get('sequential', False))
         if self.sequential and self.capacity != 1:
             raise ValueError("A sequential channel must have a capacity of 1")
@@ -370,11 +374,16 @@ class Channel(object):
 
     def __str__(self):
         capacity = u'∞' if self.capacity is None else str(self.capacity)
-        return "%s(C:%s,Q:%d,R:%d,F:%d)" % (self.fullname,
-                                            capacity,
-                                            len(self._queue),
-                                            len(self._running),
-                                            len(self._failed))
+        if self.minimum is not None:
+            minimum = str(self.minimum)
+        else:
+            minimum = capacity
+        return "%s(C:%s,M:%s,Q:%d,R:%d,F:%d)" % (self.fullname,
+                                                 capacity,
+                                                 minimum,
+                                                 len(self._queue),
+                                                 len(self._running),
+                                                 len(self._failed))
 
     def remove(self, job):
         """ Remove a job from the channel. """
@@ -433,6 +442,35 @@ class Channel(object):
             _logger.debug("job %s marked failed in channel %s",
                           job.uuid, self)
 
+    def has_capacity(self):
+        """ Checks a channels' capacity and overflow capacity if sibling
+        channels have empty queues. """
+        if not self.capacity:
+            return True
+        if len(self._running) < self.capacity:
+            return True
+        if self.parent:
+            overflow_cap = 0
+            # find siblings with open capacity
+            for channel in self.parent.children.values():
+                if channel == self:
+                    continue
+                cap, minimum, enqueued, running = self.get_channel_counters(
+                    channel)
+                if enqueued > 0 and minimum <= running:
+                    continue
+                if running < cap:
+                    overflow_cap += cap - max([running, minimum])
+
+            if self.capacity + overflow_cap > len(self._running):
+                return True
+        return False
+
+    @staticmethod
+    def get_channel_counters(channel):
+        return channel.capacity, channel.minimum, \
+               len(channel._queue), len(channel._running)
+
     def get_jobs_to_run(self, now):
         """ Get jobs that are ready to run in channel.
 
@@ -457,10 +495,36 @@ class Channel(object):
         if self.sequential and len(self._failed):
             return
         # yield jobs that are ready to run
-        while not self.capacity or len(self._running) < self.capacity:
+        _deferred = SafeSet()
+        while self.has_capacity():
+
             job = self._queue.pop(now)
             if not job:
                 return
+
+            # Maintain sequence for jobs with same sequence group
+            running_sequence_jobs = filter(
+                lambda j: j.sequence_group == job.sequence_group,
+                self._running)
+            _logger.debug("running sequence %s" % running_sequence_jobs)
+            _logger.debug("running %s" % self._running)
+            deferred_sequence_jobs = filter(
+                lambda j: j.sequence_group == job.sequence_group,
+                _deferred)
+            _logger.debug("defer sequence %s" % deferred_sequence_jobs)
+            if job.sequence_group and (
+                    running_sequence_jobs or deferred_sequence_jobs):
+                _deferred.add(job)
+                _logger.debug("job %s re-queued because job %s with same "
+                              "sequence group %s is already running "
+                              "in channel %s",
+                              job.uuid,
+                              map(lambda j: j.uuid, running_sequence_jobs) or
+                              map(lambda j: j.uuid, deferred_sequence_jobs),
+                              job.sequence_group,
+                              self)
+                continue
+
             self._running.add(job)
             _logger.debug("job %s marked running in channel %s",
                           job.uuid, self)
@@ -524,6 +588,53 @@ class ChannelManager(object):
     >>> cm.notify(db, 'A', 'A6', 6, 0, 5, None, 'pending')
     >>> pp(list(cm.get_jobs_to_run(now=100)))
     [<ChannelJob A6>]
+
+    Configure 1 root channel and 3 subchannels.
+    >>> cm = ChannelManager()
+    >>> cm.simple_configure('root:8,C:3:minimum=1,D:2:minimum=1,E:3:minimum=1')
+
+    Enqueue 4 jobs in channel C, 3 jobs in channel D and 1 job in channel E.
+    Since E has an overflow capacity of 2, we expect all jobs to be enqueued.
+
+    >>> cm.notify(db, 'C', 'C1', 1, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C2', 2, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C3', 3, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C4', 4, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D1', 5, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D2', 6, 0, 9, None, 'pending')
+    >>> cm.notify(db, 'D', 'D3', 7, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'E', 'E1', 8, 0, 10, None, 'pending')
+    >>> pp(list(cm.get_jobs_to_run(now=100)))
+    [<ChannelJob D2>,
+     <ChannelJob C1>,
+     <ChannelJob C2>,
+     <ChannelJob C3>,
+     <ChannelJob C4>,
+     <ChannelJob D1>,
+     <ChannelJob D3>,
+     <ChannelJob E1>]
+
+    Even if channel E has only 1 extra slot, we still the same response since
+    the root channel capacity is only 8.
+    >>> cm.notify(db, 'C', 'C1', 1, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C2', 2, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C3', 3, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C4', 4, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D1', 5, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D2', 6, 0, 9, None, 'pending')
+    >>> cm.notify(db, 'D', 'D3', 7, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'E', 'E1', 8, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'E', 'E2', 9, 0, 10, None, 'pending')
+    >>> pp(list(cm.get_jobs_to_run(now=100)))
+    [<ChannelJob D2>,
+     <ChannelJob C1>,
+     <ChannelJob C2>,
+     <ChannelJob C3>,
+     <ChannelJob C4>,
+     <ChannelJob D1>,
+     <ChannelJob D3>,
+     <ChannelJob E1>]
+
     """
 
     def __init__(self):
@@ -592,6 +703,11 @@ class ChannelManager(object):
         [{'capacity': 4, 'name': 'root'},
          {'capacity': 1, 'k': 'va lue', 'name': 'foo bar'},
          {'capacity': 1, 'name': 'baz'}]
+
+         >>> pp(ChannelManager.parse_simple_config('root:4,root.sub:2:'
+         ...                                        'minimum=1'))
+         [{'capacity': 4, 'name': 'root'},
+          {'capacity': 2, 'minimum': '1', 'name': 'root.sub'}]
         """
         res = []
         config_string = config_string.replace("\n", ",")
@@ -621,12 +737,12 @@ class ChannelManager(object):
                     elif len(kv) == 2:
                         k, v = kv
                     else:
-                        raise ValueError('Invalid channel config %s: ',
-                                         'incorrect config item %s'
+                        raise ValueError('Invalid channel config %s: '
+                                         'incorrect config item %s' %
                                          (config_string, config_item))
                     if k in config:
                         raise ValueError('Invalid channel config %s: '
-                                         'duplicate key %s'
+                                         'duplicate key %s' %
                                          (config_string, k))
                     config[k] = v
             else:
