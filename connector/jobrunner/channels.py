@@ -390,7 +390,7 @@ class Channel(object):
         This removes it from the channel queue.
         """
         self.remove(job)
-        _logger.debug("job %s marked done in channel %s",
+        _logger.info("job %s marked done in channel %s",
                       job.uuid, self)
 
     def set_pending(self, job):
@@ -405,7 +405,7 @@ class Channel(object):
             self._failed.remove(job)
             if self.parent:
                 self.parent.remove(job)
-            _logger.debug("job %s marked pending in channel %s",
+            _logger.info("job %s marked pending in channel %s",
                           job.uuid, self)
 
     def set_running(self, job):
@@ -419,7 +419,7 @@ class Channel(object):
             self._failed.remove(job)
             if self.parent:
                 self.parent.set_running(job)
-            _logger.debug("job %s marked running in channel %s",
+            _logger.info("job %s marked running in channel %s",
                           job.uuid, self)
 
     def set_failed(self, job):
@@ -430,7 +430,7 @@ class Channel(object):
             self._failed.add(job)
             if self.parent:
                 self.parent.remove(job)
-            _logger.debug("job %s marked failed in channel %s",
+            _logger.info("job %s marked failed in channel %s",
                           job.uuid, self)
 
     def get_jobs_to_run(self, now):
