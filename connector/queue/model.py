@@ -96,14 +96,26 @@ class QueueJob(models.Model):
     # for searching without JOIN on channels
     channel = fields.Char(compute='_compute_channel', store=True, select=True)
     sequence_group = fields.Char()
+    db_load = fields.Float(compute='_compute_channel',
+                           string='DB Load', readonly=True,
+                           digits=(14, 2), store=True)
 
-    @api.one
+    # The missing dependency on job_function_id.db_load is on purpose, to
+    # prevent a costly recomputation of the db_load of existing jobs when it
+    # is modified on the job function
+    @api.multi
     @api.depends('func_name', 'job_function_id.channel_id')
     def _compute_channel(self):
         func_model = self.env['queue.job.function']
-        function = func_model.search([('name', '=', self.func_name)])
-        self.job_function_id = function
-        self.channel = self.job_function_id.channel
+        functions = {}
+        for job in self:
+            if job.func_name not in functions:
+                functions[job.func_name] = func_model.search(
+                    [('name', '=', job.func_name)])
+            function = functions[job.func_name]
+            job.job_function_id = function
+            job.channel = function.channel
+            job.db_load = function.db_load
 
     @api.multi
     def open_related_action(self):
@@ -491,6 +503,10 @@ class JobFunction(models.Model):
     channel = fields.Char(related='channel_id.complete_name',
                           store=True,
                           readonly=True)
+    db_load = fields.Float(
+        digits=(14, 2), default=1.0, help=(
+            'The default, relative load that a job with this function '
+            'will add when it is started'))
 
     @api.model
     def _find_or_create_channel(self, channel_path):
