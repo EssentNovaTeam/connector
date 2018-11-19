@@ -279,6 +279,7 @@
                     <group>
                         <field name="name" readonly="1"/>
                         <field name="channel_id"/>
+                        <field name="db_load"/>
                     </group>
                 </form>
             </field>
@@ -291,6 +292,7 @@
                 <tree string="Job Functions" create="false" delete="false" version="7.0">
                     <field name="name"/>
                     <field name="channel_id"/>
+                    <field name="db_load"/>
                 </tree>
             </field>
         </record>
