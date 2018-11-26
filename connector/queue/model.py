@@ -22,6 +22,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
+from openupgradelib.openupgrade import column_exists
 
 from openerp import models, fields, api, exceptions, _
 
@@ -539,6 +540,11 @@ class JobFunction(models.Model):
                 continue
             func_name = '%s.%s' % (func.__module__, func.__name__)
             if not self.search_count([('name', '=', func_name)]):
+                if not column_exists(self.env.cr, 'queue_job_function', 'db_load'):
+                    # Create the column manually
+                    self.env.cr.execute("""
+                      ALTER TABLE queue_job_function ADD COLUMN db_load NUMERIC;
+                    """)
                 channel = self._find_or_create_channel(func.default_channel)
                 self.create({'name': func_name, 'channel_id': channel.id})
 
