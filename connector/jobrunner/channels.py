@@ -436,22 +436,52 @@ class Channel(object):
             _logger.info("job %s marked failed in channel %s",
                           job.uuid, self)
 
-    def get_jobs_to_run(self, now):
+    def get_jobs_to_run(self, now, jobs_to_get=None):
         """ Get jobs that are ready to run in channel.
 
         This works by enqueuing jobs that are ready to run in children
         channels, then yielding jobs from the channel queue until
-        ``capacity`` jobs are marked running in the channel.
+        ``capacity`` jobs are marked running in the channel (unless jobs_to_get
+        overrides the maximum capacity.
+
+        Child jobs are retrieved in round robin fashion (but this only makes
+        a difference when jobs_to_get is specified)
 
         :param now: the current datetime using a type that is comparable to
                     jobs eta attribute
 
+        :param jobs_to_get: this represents the overcapacity of the parent
+                            channel and overrides this channel's capacity. It
+                            represents a maximum value that is shared between
+                            all siblings. If it is None, don't return more jobs
+                            than this channel's capacity allows.
+
         :return: iterator of :py:class:`connector.jobrunner.ChannelJob`
         """
-        # enqueue jobs of children channels
-        for child in self.children.values():
-            for job in child.get_jobs_to_run(now):
-                self._queue.add(job)
+        jobs_to_get_orig = jobs_to_get
+
+        # enqueue jobs of children channels. If jobs_to_get is not None,
+        # don't fetch jobs beyond the specified number. Otherwise, leave it to
+        # the child channels to consume their own capacity.
+        generators = [
+            child.get_jobs_to_run(now, jobs_to_get=jobs_to_get)
+            for child in sorted(self.children.values(), key=lambda ch: ch.name)]
+
+        found_job = True
+        while found_job and jobs_to_get != 0:
+            found_job = False
+            for generator in generators:
+                try:
+                    job = next(generator)
+                    self._queue.add(job)
+                    found_job = True
+                    if jobs_to_get is not None:  # Add a single job
+                        jobs_to_get -= 1
+                except StopIteration:
+                    pass
+                if jobs_to_get == 0:  # No more overcapacity
+                    break
+
         # sequential channels block when there are failed jobs
         # TODO: this is probably not sufficient to ensure
         #       sequentiality because of the behaviour in presence
@@ -461,11 +491,24 @@ class Channel(object):
             return
         # yield jobs that are ready to run
         _deferred = SafeSet()
-        while not self.capacity or len(self._running) < self.capacity:
+        jobs_to_get = jobs_to_get_orig  # reset the counter of jobs to return
+        found_job = True
+        while (not self.capacity or len(self._running) < self.capacity
+               or (jobs_to_get and found_job)):
+            found_job = False
             job = self._queue.pop(now)
             if not job:
                 for job in _deferred:
                     self._queue.add(job)
+                if (jobs_to_get is None and self.children):
+                    overcapacity = (
+                        self.capacity - len(self._running) -
+                        sum(max(child.capacity - len(child._running), 0)
+                            for child in self.children.values()))
+                    if overcapacity > 0:
+                        for job in self.get_jobs_to_run(
+                                now, jobs_to_get=overcapacity):
+                            yield job
                 return
             # Maintain sequence for jobs with same sequence group
             running_sequence_jobs = filter(
@@ -491,6 +534,9 @@ class Channel(object):
             self._running.add(job)
             _logger.debug("job %s marked running in channel %s",
                           job.uuid, self)
+            if jobs_to_get is not None:
+                jobs_to_get -= 1
+            found_job = True
             yield job
         for job in _deferred:
             self._queue.add(job)
@@ -553,6 +599,70 @@ class ChannelManager(object):
     >>> cm.notify(db, 'A', 'A6', 6, 0, 5, None, 'pending')
     >>> pp(list(cm.get_jobs_to_run(now=100)))
     [<ChannelJob A6>]
+
+    Configure 1 root channel and 3 subchannels.
+    >>> cm = ChannelManager()
+    >>> cm.simple_configure('root:10,C:3,D:2,E:3')
+
+    Enqueue 4 jobs in channel C, 3 jobs in channel D and 1 job in channel E.
+    Since root has an overflow capacity of 2, we expect all jobs to be enqueued.
+
+    >>> cm.notify(db, 'C', 'C1', 1, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C2', 2, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C3', 3, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C4', 4, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'E', 'E1', 5, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D1', 6, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D2', 7, 0, 9, None, 'pending')
+    >>> cm.notify(db, 'D', 'D3', 8, 0, 10, None, 'pending')
+    >>> pp(list(cm.get_jobs_to_run(now=100)))
+    [<ChannelJob D2>,
+     <ChannelJob C1>,
+     <ChannelJob C2>,
+     <ChannelJob C3>,
+     <ChannelJob E1>,
+     <ChannelJob D1>,
+     <ChannelJob C4>,
+     <ChannelJob D3>]
+
+    Filling the capacity of all channels results in no additional jobs to get
+    queued.
+    >>> cm.notify(db, 'C', 'C1', 1, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C2', 2, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C3', 3, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C4', 4, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D1', 5, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D2', 6, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'D', 'D3', 7, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'E', 'E1', 8, 0, 10, None, 'pending')
+    >>> pp(list(cm.get_jobs_to_run(now=100)))
+    [<ChannelJob C1>,
+     <ChannelJob C2>,
+     <ChannelJob C3>,
+     <ChannelJob D1>,
+     <ChannelJob D2>,
+     <ChannelJob E1>,
+     <ChannelJob C4>,
+     <ChannelJob D3>]
+
+    Within-capacity jobs and overflow jobs are sorted by priority only
+    within their own set.
+
+    >>> cm = ChannelManager()
+    >>> cm.simple_configure('root:4,C:1,D:1')
+    >>> cm.notify(db, 'C', 'C1', 1, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C2', 2, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C3', 3, 0, 10, None, 'pending')
+    >>> cm.notify(db, 'C', 'C4', 4, 0, 10, None, 'done')
+    >>> cm.notify(db, 'D', 'D1', 5, 0, 9, None, 'pending')
+    >>> cm.notify(db, 'D', 'D2', 6, 0, 8, None, 'pending')
+    >>> cm.notify(db, 'D', 'D3', 6, 0, 9, None, 'pending')
+    >>> pp(list(cm.get_jobs_to_run(now=100)))
+    [<ChannelJob D2>, <ChannelJob C1>, <ChannelJob D1>, <ChannelJob C2>]
+
+    >>> cm.notify(db, 'C', 'C2', 3, 0, 10, None, 'done')
+    >>> pp(list(cm.get_jobs_to_run(now=100)))
+    [<ChannelJob C3>]
     """
 
     def __init__(self):
