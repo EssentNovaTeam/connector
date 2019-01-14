@@ -351,7 +351,7 @@ def start_service():
 # 2. Or it is used in multiprocess (with option ``--workers``)
 #    but the current process is a Connector Worker
 #    (launched with the ``openerp-connector-worker`` script).
-if not _channels():
+if not _channels() and not config['stop_after_init']:
     if (not getattr(openerp, 'multi_process', False) or
             getattr(openerp, 'worker_connector', False)):
         start_service()
