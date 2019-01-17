@@ -296,6 +296,19 @@ class Database(object):
             cr.execute(query, args)
             return list(cr.fetchall())
 
+    def reset_enqueued_jobs(self):
+        """ When the job runner is starting up or restarting after a worker
+        crash, reset any jobs that were left in the enqueued state. """
+        query = ("UPDATE queue_job SET state = 'pending' "
+                 "WHERE state = 'enqueued' RETURNING uuid")
+        with closing(self.conn.cursor()) as cr:
+            cr.execute(query)
+            jobs = [uuid for uuid, in cr.fetchall()]
+        for uuid in jobs:
+            _logger.warning(
+                'Resetting job %s from enqueued to pending on job runner '
+                'start', uuid)
+
     def set_job_enqueued(self, uuid):
         with closing(self.conn.cursor()) as cr:
             cr.execute("UPDATE queue_job SET state=%s, "
@@ -363,6 +376,7 @@ class ConnectorRunner(object):
                 self.db_by_name[db_name] = db
                 for job_data in db.select_jobs('state in %s', (NOT_DONE,)):
                     self.channel_manager.notify(db_name, *job_data)
+                db.reset_enqueued_jobs()
                 _logger.info('connector runner ready for db %s', db_name)
                 _logger.debug('job run timeout %s seconds', _run_job_timeout())
 
