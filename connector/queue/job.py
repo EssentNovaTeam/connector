@@ -22,6 +22,7 @@
 import inspect
 import functools
 import logging
+from random import randint
 import uuid
 import sys
 from datetime import date, datetime, timedelta, MINYEAR
@@ -632,6 +633,9 @@ class Job(object):
                     break
         elif not seconds:
             seconds = RETRY_INTERVAL
+        # Support the retry pattern specifying a range
+        if isinstance(seconds, (list, tuple)):
+            seconds = randint(seconds[0], seconds[1])
         return seconds
 
     def postpone(self, result=None, seconds=None):
