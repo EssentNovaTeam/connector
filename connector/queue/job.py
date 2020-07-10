@@ -27,6 +27,7 @@ import sys
 from datetime import date, datetime, timedelta, MINYEAR
 from cPickle import dumps, UnpicklingError, Unpickler
 from cStringIO import StringIO
+from psycopg2.extensions import AsIs
 from socket import gethostname
 
 import openerp
@@ -136,19 +137,21 @@ class OpenERPJobStorage(JobStorage):
     """ Store a job on OpenERP """
 
     _job_model_name = 'queue.job'
+    _job_relation_model_name = 'queue.job.record.relation'
     _worker_model_name = 'queue.worker'
 
     def __init__(self, session):
         super(OpenERPJobStorage, self).__init__()
         self.session = session
         self.job_model = self.session.env[self._job_model_name]
+        self.relation_model = self.session.env[self._job_relation_model_name]
         self.worker_model = self.session.env[self._worker_model_name]
         assert self.job_model is not None, (
             "Model %s not found" % self._job_model_name)
 
     def enqueue(self, func, model_name=None, args=None, kwargs=None,
                 priority=None, eta=None, max_retries=None, description=None,
-                sequence_group=None):
+                sequence_group=None, record_ids=None):
         """Create a Job and enqueue it in the queue. Return the job uuid.
 
         This expects the arguments specific to the job to be already extracted
@@ -158,7 +161,7 @@ class OpenERPJobStorage(JobStorage):
         new_job = Job(func=func, model_name=model_name, args=args,
                       kwargs=kwargs, priority=priority, eta=eta,
                       max_retries=max_retries, description=description,
-                      sequence_group=sequence_group)
+                      sequence_group=sequence_group, record_ids=record_ids)
         new_job.user_id = self.session.uid
         if 'company_id' in self.session.context:
             company_id = self.session.context['company_id']
@@ -177,6 +180,7 @@ class OpenERPJobStorage(JobStorage):
         priority = kwargs.pop('priority', None)
         eta = kwargs.pop('eta', None)
         model_name = kwargs.pop('model_name', None)
+        record_ids = kwargs.pop('record_ids', None)
         max_retries = kwargs.pop('max_retries', None)
         description = kwargs.pop('description', None)
         sequence_group = kwargs.pop('sequence_group', None)
@@ -187,7 +191,8 @@ class OpenERPJobStorage(JobStorage):
                             max_retries=max_retries,
                             eta=eta,
                             description=description,
-                            sequence_group=sequence_group)
+                            sequence_group=sequence_group,
+                            record_ids=record_ids)
 
     def exists(self, job_uuid):
         """Returns if a job still exists in the storage."""
@@ -263,10 +268,30 @@ class OpenERPJobStorage(JobStorage):
                                   job_.args,
                                   job_.kwargs))
 
-            self.job_model.with_context(
+            job_rec = self.job_model.with_context(
                 mail_create_nosubscribe=True,
                 mail_create_nolog=True,
                 mail_notrack=True).sudo().create(vals)
+
+            # Circumvent ORM with relation record multi insert
+            if job_.record_ids:
+                rel_vals = self._format_record_relation_insert(
+                    job_.record_ids, job_rec)
+                self.session.env.cr.execute("""
+                    INSERT INTO queue_job_record_relation (
+                        create_uid, create_date, write_uid, write_date,
+                        job_id, record_id, model_name) VALUES %(rel_vals)s;
+                """, {'rel_vals': AsIs(rel_vals)})
+
+    @staticmethod
+    def _format_record_relation_insert(record_ids, job_rec):
+        """ Format SQL insertion values for record relation table. """
+        result = []
+        for rec_id in record_ids:
+            result.append(
+                "(1, now(), 1, now(), {}, {}, '{}')".format(
+                    job_rec.id, rec_id, job_rec.model_name))
+        return ", ".join(result)
 
     def load(self, job_uuid):
         """ Read a job from the Database"""
@@ -284,9 +309,17 @@ class OpenERPJobStorage(JobStorage):
         if stored.eta:
             eta = dt_from_string(stored.eta)
 
+        record_ids = None
+        if stored.record_ids:
+            record_ids = stored.record_ids.mapped('record_id')
+
         job_ = Job(func=func_name, args=args, kwargs=kwargs,
                    priority=stored.priority, eta=eta, job_uuid=stored.uuid,
-                   description=stored.name)
+                   description=stored.name, record_ids=record_ids)
+
+        # Re-insert the record_ids in the kwargs when loading the job
+        if stored.record_ids:
+            kwargs.update({'record_ids': job_.record_ids})
 
         if stored.date_created:
             job_.date_created = dt_from_string(stored.date_created)
@@ -424,7 +457,7 @@ class Job(object):
     def __init__(self, func=None, model_name=None,
                  args=None, kwargs=None, priority=None,
                  eta=None, job_uuid=None, max_retries=None,
-                 description=None, sequence_group=None):
+                 description=None, sequence_group=None, record_ids=None):
         """ Create a Job
 
         :param func: function to execute
@@ -484,6 +517,13 @@ class Job(object):
         if self.model_name:
             args = tuple([self.model_name] + list(args))
         self.args = args
+
+        if record_ids is None:
+            record_ids = []
+        if isinstance(record_ids, int):
+            record_ids = [record_ids]
+        self.record_ids = record_ids
+
         self.kwargs = kwargs
 
         self.priority = priority
@@ -667,10 +707,38 @@ class Job(object):
             self.result = result
 
     def related_action(self, session):
-        if not hasattr(self.func, 'related_action'):
-            return None
-        return self.func.related_action(session, self)
+        if hasattr(self.func, 'related_action'):
+            return self.func.related_action(session, self)
+        return self._default_related_action(session)
 
+    def _default_related_action(self, session):
+        """Open a form view with the record(s) of the job.
+        For instance, for a job on a ``product.product``, it will open a
+        ``product.product`` form view with the product record(s) concerned by
+        the job. If the job concerns more than one record, it opens them in a
+        list.
+        This is the default related action.
+        """
+        records = session.env[self.model_name].browse(self.record_ids).exists()
+        if not records:
+            return None
+        action = {
+            "name": _("Related Record(s)"),
+            "type": "ir.actions.act_window",
+            "view_mode": "form",
+            "res_model": records._name,
+        }
+        if len(records) == 1:
+            action["res_id"] = records.id
+        else:
+            action.update(
+                {
+                    "name": _("Related Records"),
+                    "view_mode": "tree,form",
+                    "domain": [("id", "in", records.ids)],
+                }
+            )
+        return action
 
 JOB_REGISTRY = set()
 

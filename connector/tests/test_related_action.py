@@ -57,7 +57,9 @@ class test_related_action(unittest2.TestCase):
     def test_no_related_action(self):
         """ Job without related action """
         job = Job(func=task_no_related)
-        self.assertIsNone(job.related_action(self.session))
+        self.assertTrue(job.related_action(self.session))
+        self.assertEqual(
+            job.related_action(self.session)['name'], "Related Records")
 
     def test_return_none(self):
         """ Job with related action returning None """

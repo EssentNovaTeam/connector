@@ -81,6 +81,9 @@ class QueueJob(models.Model):
     eta = fields.Datetime(string='Execute only after')
     active = fields.Boolean(default=True)
     model_name = fields.Char(string='Model', readonly=True)
+    record_ids = fields.One2many(
+        'queue.job.record.relation', inverse_name='job_id',
+        string='Record IDs', readonly=True)
     retry = fields.Integer(string='Current try')
     max_retries = fields.Integer(
         string='Max. retries',
@@ -222,6 +225,16 @@ class QueueJob(models.Model):
         )
         jobs.unlink()
         return True
+
+
+class QueueJobRecordRelation(models.BaseModel):
+    """ Relation between model records and queue jobs """
+    _name = 'queue.job.record.relation'
+    _description = 'Queue Job and Record Relations'
+
+    job_id = fields.Many2one('queue.job', index=True)
+    model_name = fields.Char(index=True)
+    record_id = fields.Integer(index=True)
 
 
 class QueueWorker(models.Model):

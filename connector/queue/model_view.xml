@@ -88,6 +88,9 @@
                         </group>
                         <group>
                             <group>
+                                <field name="model_name"/>
+                            </group>
+                            <group>
                                 <field name="priority"/>
                                 <field name="eta"/>
                                 <field name="company_id" groups="base.group_multi_company"/>
@@ -114,6 +117,16 @@
                         <group name="exc_info" string="Exception Information" attrs="{'invisible': [('exc_info', '=', False)]}">
                             <field nolabel="1" name="exc_info"/>
                         </group>
+                        <notebook>
+                            <page name="relation_records" string="Record IDs">
+                                <field name="record_ids" nolabel="1">
+                                    <tree>
+                                        <field name="model_name"/>
+                                        <field name="record_id"/>
+                                    </tree>
+                                </field>
+                            </page>
+                        </notebook>
                     </sheet>
                     <div class="oe_chatter">
                         <field name="message_follower_ids" widget="mail_followers"/>
